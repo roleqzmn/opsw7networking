@@ -15,6 +15,9 @@ typedef struct
     pthread_mutex_t* mutex;
 } thread_arg_t;
 
+volatile sig_atomic_t work = 1;
+
+void sigint_handler(int sig) { work = 0; }
 void* udp_thread(void* arg)
 {
     thread_arg_t* thread_arg = (thread_arg_t*)arg;
@@ -28,7 +31,7 @@ void* udp_thread(void* arg)
     addr.sin_family = AF_INET;
     addr.sin_port = htons(thread_arg->port);
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    while (1)
+    while (work)
     {
         sleep(1);
         char buf[256];
@@ -38,18 +41,7 @@ void* udp_thread(void* arg)
         {
             if (thread_arg->votes[i] > 0 && thread_arg->votes[i] <= 3)
             {
-                switch (thread_arg->votes[i])
-                {
-                    case 1:
-                        results[0]++;
-                        break;
-                    case 2:
-                        results[1]++;
-                        break;
-                    case 3:
-                        results[2]++;
-                        break;
-                }
+                results[thread_arg->votes[i] - 1]++;
             }
         }
         pthread_mutex_unlock(thread_arg->mutex);
@@ -60,6 +52,7 @@ void* udp_thread(void* arg)
             ERR("sendto");
         }
     }
+    close(fd);
     return NULL;
 }
 
@@ -71,6 +64,11 @@ int main(int argc, char* argv[])
     }
     int port = atoi(argv[1]);
     int udp_port = atoi(argv[2]);
+
+    if (sethandler(sigint_handler, SIGINT) < 0)
+    {
+        ERR("sethandler");
+    }
 
     int electorsfd[MAX_ELECTORS];
     for (int i = 0; i < MAX_ELECTORS; i++)
@@ -112,7 +110,7 @@ int main(int argc, char* argv[])
         ERR("epoll_ctl");
     }
 
-    while (1)
+    while (work)
     {
         int nofd = epoll_wait(epollfd, events, MAX_ELECTORS, -1);
         if (nofd == -1)
@@ -233,21 +231,22 @@ int main(int argc, char* argv[])
             }
         }
     }
-    // wiem ze na razie nie wyjdzie ale mialem warning unused variable i nie chcialem go zostawiac
+    pthread_join(udp_thread_id, NULL);
+
     int count_votes[3] = {0};
     for (int i = 0; i < MAX_ELECTORS; i++)
     {
         if (electorsfd[i] != -1)
         {
+            close(electorsfd[i]);
             if (votes[i] > 0 && votes[i] <= 3)
             {
                 count_votes[votes[i] - 1]++;
             }
         }
     }
-    printf("Votes for candidate 1: %d\n", count_votes[0]);
-    printf("Votes for candidate 2: %d\n", count_votes[1]);
-    printf("Votes for candidate 3: %d\n", count_votes[2]);
+    printf("\nVotes for candidate 1: %d\nVotes for candidate 2: %d\nVotes for candidate 3: %d\n", count_votes[0],
+           count_votes[1], count_votes[2]);
     close(epollfd);
     close(listenfd);
     return 0;
